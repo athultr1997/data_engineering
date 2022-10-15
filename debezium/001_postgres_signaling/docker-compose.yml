@@ -1,0 +1,112 @@
+version: "3.9"
+
+networks:
+  dataplatform:
+    driver: bridge
+
+services:
+  
+  zookeeper:
+    container_name: dp-zookeeper
+    image: 'zookeeper:latest'
+    ports:
+      - "2181:2181"
+      - "2888:2888"
+      - "3888:3888"
+    networks:
+      - dataplatform
+
+  kafka:
+    container_name: dp-kafka
+    image: 'wurstmeister/kafka:2.13-2.8.1'
+    networks:
+      - dataplatform
+    ports:
+      - "9092:9092"
+    environment:
+      DOCKER_API_VERSION: 1.22
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092
+    depends_on:
+      - zookeeper
+  
+  schema-registry:
+    container_name: dp-schema-registry
+    image: confluentinc/cp-schema-registry
+    ports:
+      - 8181:8181
+      - 8081:8081
+    environment:
+      - SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL=zookeeper:2181
+      - SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS=kafka:9092
+      - SCHEMA_REGISTRY_HOST_NAME=schema-registry
+      - SCHEMA_REGISTRY_LISTENERS=http://schema-registry:8081
+    depends_on:
+      - zookeeper
+      - kafka
+    networks:
+      - dataplatform
+    
+  debezium-connect:
+    container_name: dp-debezium-connect
+    image: 'confluentinc/cp-kafka-connect:6.2.4'
+    platform: linux/x86_64
+    ports:
+      - "8083:8083"
+    networks:
+      - dataplatform
+    environment:
+      - CONNECT_BOOTSTRAP_SERVERS=kafka:9092
+      - CONNECT_REST_PORT=8083
+      - CONNECT_GROUP_ID=1
+      - CONNECT_CONFIG_STORAGE_TOPIC=my_connect_configs
+      - CONNECT_OFFSET_STORAGE_TOPIC=my_connect_offsets
+      - CONNECT_STATUS_STORAGE_TOPIC=my_connect_statuses
+      - CONNECT_KEY_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      - CONNECT_VALUE_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      - CONNECT_INTERNAL_KEY_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      - CONNECT_INTERNAL_VALUE_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      - CONNECT_REST_ADVERTISED_HOST_NAME=debezium-connect
+      - CONNECT_PLUGIN_PATH=/data/connect-jars
+      - CONNECT_CONFIG_STORAGE_REPLICATION.FACTOR=1
+      - CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR=1
+      - CONNECT_STATUS_STORAGE_REPLICATION_FACTOR=1
+    volumes:
+      - ./plugins:/data/connect-jars
+    depends_on:
+    - kafka
+    - schema-registry
+  
+  kafka-ui:
+    container_name: dp-kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - 8084:8080
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=dataplatform
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=PLAINTEXT://kafka:9092
+      - KAFKA_CLUSTERS_0_SCHEMAREGISTRY=http://schema-registry:8081
+      - KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME=debezium
+      - KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS=http://debezium-connect:8083
+    depends_on:
+      - zookeeper
+      - kafka
+    networks:
+      - dataplatform
+  
+  postgres:
+    container_name: dp-postgres
+    image: postgres:15.0
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./postgres:/docker-entrypoint-initdb.d
+    networks:
+      - dataplatform
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
